@@ -36,3 +36,22 @@ export interface NewToken {
   detectedAt: number;
   launchlab?: LaunchLabLaunch;
 }
+
+export type Venue = 'jupiter' | 'launchlab';
+
+export interface Position {
+  mint: string;
+  symbol?: string;
+  source: Source;
+  /** Dónde se vende: en la curva de LaunchLab (mientras siga activa) o vía Jupiter. */
+  venue: Venue;
+  /** Token con el que se pagó (SOL, SPYx…). El PnL se mide en este token. */
+  quoteMint: string;
+  quoteDecimals: number;
+  tokenAmount: bigint;
+  costQuote: bigint;
+  openedAt: number;
+  transferFee?: { bps: number; max: bigint };
+  launchlab?: LaunchLabLaunch;
+  selling?: boolean;
+}

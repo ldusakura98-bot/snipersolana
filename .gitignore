@@ -3,3 +3,5 @@ dist/
 .env
 *.log
 wallet*.json
+positions.json
+positions.json.tmp

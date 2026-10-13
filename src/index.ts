@@ -1,12 +1,14 @@
 import { Connection } from '@solana/web3.js';
 import { config, WSOL_MINT } from './config.js';
-import { checkMint } from './filters.js';
+import { checkMint, MintCheck } from './filters.js';
 import { getQuote } from './jupiter.js';
 import { LaunchLabClient, spotPrice } from './launchlab/client.js';
 import { curveProgressPct } from './launchlab/curve.js';
+import { LAUNCHLAB_AUTHORITY } from './launchlab/instructions.js';
 import { CurveType, PoolStatus } from './launchlab/layout.js';
 import { log } from './logger.js';
 import { formatAmount, PositionManager } from './positions.js';
+import { startGrpcStream } from './stream/grpc.js';
 import { startWebsocketStream } from './stream/websocket.js';
 import { LAMPORTS_PER_SOL, Trader } from './trader.js';
 import { BlockhashCache } from './tx.js';
@@ -42,8 +44,16 @@ async function snipeLaunchLab(t: NewToken) {
   if (s.curveType === CurveType.Linear) return skip('curva lineal (no soportada)');
   if (progress > config.maxCurveProgressPct) return skip(`curva al ${progress.toFixed(1)}% (máx ${config.maxCurveProgressPct}%)`);
 
-  const mintCheck = await checkMint(connection, l.baseMint);
-  if (!mintCheck.ok) return skip(mintCheck.reason!);
+  // El mint lo crea el propio programa LaunchLab (el creador no conserva authorities) y la transfer fee
+  // viene en la instrucción. Con shreds el mint aún no existe, así que no se puede (ni hace falta) leer.
+  let mintCheck: MintCheck = { ok: true, transferFee: l.transferFee };
+  if (l.transferFee && l.transferFee.bps > config.maxTransferFeeBps) {
+    return skip(`transfer fee ${l.transferFee.bps / 100}% > máximo ${config.maxTransferFeeBps / 100}%`);
+  }
+  if (config.detection !== 'shreds') {
+    mintCheck = await checkMint(connection, l.baseMint, [LAUNCHLAB_AUTHORITY.toBase58()]);
+    if (!mintCheck.ok) return skip(mintCheck.reason!);
+  }
 
   const quoteIn = await trader.quoteAmountFor(l.quoteMint, s.quoteDecimals);
   if (!quoteIn) return skip(`no se pudo calcular cuánto ${quote} gastar (añádelo a QUOTE_BUY_AMOUNTS)`);
@@ -132,7 +142,12 @@ async function main() {
   await blockhashes.start();
   positions.load();
   positions.start();
-  const stopStream = startWebsocketStream(connection, config.sources, (t) => void onNewToken(t));
+  const onToken = (t: NewToken) => void onNewToken(t);
+  log.info(`Detección: ${config.detection}${config.jitoEnabled ? ' | envío: RPC + Jito' : ''}`);
+  const stopStream =
+    config.detection === 'websocket'
+      ? startWebsocketStream(connection, config.sources, onToken)
+      : startGrpcStream(config.detection, config.grpcUrl!, config.grpcToken, config.sources, onToken);
 
   const shutdown = async () => {
     log.info('Deteniendo...');

@@ -63,6 +63,9 @@ describe('decodeLaunchLabCreate', () => {
       u64le(1_000_000_000_000_000n, 793_100_000_000_000n, 85_000_000_000n),
       Buffer.from([1]), // migrate_type
       u64le(0n, 0n, 0n), // VestingParams
+      Buffer.from([0, 1]), // amm_fee_on, Some(TransferFeeExtensionParams)
+      Buffer.from([0x2c, 0x01]), // 300 bps
+      u64le(1_000_000n),
     ]),
   };
   const devBuy: RawIx = {
@@ -93,6 +96,7 @@ describe('decodeLaunchLabCreate', () => {
       totalQuoteFundRaising: 85_000_000_000n,
     });
     assert.deepEqual(l.sameTxBuysQuote, [2_000_000_000n]);
+    assert.deepEqual(l.transferFee, { bps: 300, max: 1_000_000n });
   });
 
   it('ignora instrucciones de otros programas o que no son de creación', () => {

@@ -16,7 +16,12 @@ interface ParsedMint {
 }
 
 /** Comprobaciones on-chain del mint antes de comprar. */
-export async function checkMint(connection: Connection, mint: string): Promise<MintCheck> {
+export async function checkMint(
+  connection: Connection,
+  mint: string,
+  /** Authorities aceptables (p. ej. la PDA de un programa de lanzamiento, que no puede acuñar a voluntad). */
+  trustedAuthorities: string[] = [],
+): Promise<MintCheck> {
   let info: ParsedMint | undefined;
   for (let attempt = 0; attempt < 3 && !info; attempt++) {
     const acc = await connection.getParsedAccountInfo(new PublicKey(mint), 'confirmed');
@@ -26,10 +31,10 @@ export async function checkMint(connection: Connection, mint: string): Promise<M
   }
   if (!info) return { ok: false, reason: 'no se pudo leer la cuenta del mint' };
 
-  if (config.requireMintAuthorityRevoked && info.mintAuthority) {
+  if (config.requireMintAuthorityRevoked && info.mintAuthority && !trustedAuthorities.includes(info.mintAuthority)) {
     return { ok: false, reason: `mint authority activa (${info.mintAuthority})` };
   }
-  if (config.requireFreezeAuthorityRevoked && info.freezeAuthority) {
+  if (config.requireFreezeAuthorityRevoked && info.freezeAuthority && !trustedAuthorities.includes(info.freezeAuthority)) {
     return { ok: false, reason: `freeze authority activa (${info.freezeAuthority})` };
   }
 

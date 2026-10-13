@@ -124,6 +124,4 @@ export const config = {
   jupiterApiUrl: str('JUPITER_API_URL', 'https://lite-api.jup.ag/swap/v1').replace(/\/$/, ''),
   jupiterApiKey: opt('JUPITER_API_KEY'),
 
-  telegramBotToken: opt('TELEGRAM_BOT_TOKEN'),
-  telegramChatId: opt('TELEGRAM_CHAT_ID'),
 };

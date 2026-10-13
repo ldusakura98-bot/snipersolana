@@ -10,10 +10,10 @@ import {
 import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { parseTransferFee } from '../src/filters.js';
 import { buyExactInIx } from '../src/launchlab/instructions.js';
-import { computeBudgetIxs } from '../src/tx.js';
+import { computeBudgetIxs, jitoTipIx } from '../src/tx.js';
 
 describe('transacción de compra en LaunchLab', () => {
-  it('el peor caso (quote = SOL: crear ATAs + wrap + compra + unwrap) cabe en 1232 bytes', () => {
+  it('el peor caso (quote = SOL: crear ATAs + wrap + compra + unwrap + propina Jito) cabe en 1232 bytes', () => {
     const k = () => Keypair.generate().publicKey;
     const payer = Keypair.generate();
     const [baseAta, quoteAta, baseMint, quoteMint] = [k(), k(), k(), k()];
@@ -33,6 +33,7 @@ describe('transacción de compra en LaunchLab', () => {
         1n,
       ),
       createCloseAccountInstruction(quoteAta, payer.publicKey, payer.publicKey),
+      jitoTipIx(),
     ];
     const msg = new TransactionMessage({
       payerKey: payer.publicKey,

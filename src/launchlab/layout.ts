@@ -164,6 +164,14 @@ export function decodeLaunchLabCreate(ixs: RawIx[]): LaunchLabLaunch | undefined
       r.skip(8 * 2 + 1); // Fixed / Linear: supply, total_quote_fund_raising, migrate_type
     }
     const totalLockedAmount = r.u64();
+    r.skip(8 * 2); // cliff_period, unlock_period
+
+    // initialize_with_token_2022 termina con amm_fee_on + Option<TransferFeeExtensionParams>.
+    let transferFee: LaunchLabLaunch['transferFee'];
+    if (isToken2022 && r.offset + 2 <= ix.data.length) {
+      r.u8(); // amm_fee_on
+      if (r.u8() === 1) transferFee = { bps: r.u16(), max: r.u64() };
+    }
 
     const poolState = a[5];
     return {
@@ -182,6 +190,7 @@ export function decodeLaunchLabCreate(ixs: RawIx[]): LaunchLabLaunch | undefined
       decimals,
       curve,
       totalLockedAmount,
+      transferFee,
       sameTxBuysQuote: ixs
         .filter((b) => b.programId === LAUNCHLAB_PROGRAM && startsWith(b.data, IX.buyExactIn) && b.accounts[4] === poolState)
         .map((b) => new Reader(b.data, 8).u64()),

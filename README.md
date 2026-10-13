@@ -1,58 +1,94 @@
 # Sniper Solana
 
-Bot que detecta tokens nuevos en Solana y los compra automáticamente, con filtros de seguridad y salida por take-profit / stop-loss.
+Bot que detecta lanzamientos nuevos en Solana, con foco en **StonkFun** (tokens emparejados contra acciones tokenizadas como SPYx o NVDAx), y los compra en el momento en que salen, con filtros de seguridad y salida automática.
 
 ## Cómo funciona
 
 ```
-pump.fun / Raydium ──(WebSocket logs)──► listener ──► filtros ──► compra (Jupiter) ──► gestor de posiciones ──► venta
+ detección                 decodificación          filtros              compra                   gestión
+ ─────────                 ──────────────          ───────              ──────                   ───────
+ websocket ─┐                                                       ┌─ curva LaunchLab ─┐
+ gRPC      ─┼─► RawIx[] ─► detectLaunch() ─► NewToken ─► filtros ─┤  (StonkFun)        ├─► TP / SL / tiempo ─► venta
+ shreds    ─┘                                                       └─ Jupiter ─────────┘    (positions.json)
+                                                                       (pump.fun/Raydium)
 ```
 
-| Módulo | Qué hace |
-|---|---|
-| `src/listener.ts` | Se suscribe a los logs de pump.fun (`create` / `create_v2`) y Raydium AMM v4 (`initialize2`) y extrae el mint del token nuevo. |
-| `src/filters.ts` | Rechaza tokens con *mint authority* o *freeze authority* activas. |
-| `src/jupiter.ts` | Quotes y transacciones de swap vía la API de Jupiter (enruta por pump.fun, PumpSwap, Raydium, Meteora…). |
-| `src/trader.ts` | Firma, envía y confirma los swaps. En `DRY_RUN` no envía nada. |
-| `src/positions.ts` | Revisa el valor de cada posición cada `PRICE_CHECK_INTERVAL_MS` y vende por TP, SL o tiempo máximo. |
-| `src/index.ts` | Orquesta todo y respeta `MAX_OPEN_POSITIONS`. |
+1. **Detección** (`src/stream/`): los tres modos producen la misma estructura, una lista de instrucciones normalizadas (`RawIx`). El resto del bot no sabe de dónde vienen.
+2. **Decodificación** (`src/decoders.ts`, `src/launchlab/layout.ts`): reconoce la instrucción de creación por su discriminador Anchor y extrae el mint, el par, los vaults y el `platform_config`. Ese `platform_config` es lo que distingue StonkFun de otras plataformas que usan LaunchLab.
+3. **Filtros** (`src/index.ts`, `src/filters.ts`): estado de la curva, progreso máximo, comisión de transferencia de Token-2022 y authorities del mint.
+4. **Compra** (`src/trader.ts`):
+   - **StonkFun / LaunchLab:** instrucción `buy_exact_in` directa contra la curva (`src/launchlab/instructions.ts`), sin pasar por Jupiter.
+   - **pump.fun / Raydium:** vía Jupiter.
+5. **Gestión** (`src/positions.ts`): calcula el valor con la matemática de la curva (`src/launchlab/curve.ts`). Cuando el token migra a Raydium, pasa a operar vía Jupiter. Las posiciones se guardan en `positions.json`.
+
+## StonkFun en detalle
+
+StonkFun lanza todos sus tokens en **Raydium LaunchLab** (programa `LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj`):
+
+- Cada token empieza en una **bonding curve** contra un *quote token* (SPYx, NVDAx, SOL…). Al llenarse, migra a un pool de Raydium.
+- Los mints son **Token-2022**. La config "reward" de StonkFun les pone una comisión de transferencia (transfer fee) del 1–3 %, que el bot tiene en cuenta en los cálculos.
+- Se identifican por su `platform_config`: `4E876qZT…` (estándar) y `6BwHHDg3…` (reward). Estas direcciones vienen de fuentes de terceros, conviene confirmarlas en Solscan.
+- **Para comprar contra SPYx necesitas tener SPYx en la wallet.** Pon el importe por quote token en `QUOTE_BUY_AMOUNTS`, o deja que el bot use el equivalente de `BUY_AMOUNT_SOL`. `AUTO_SWAP_QUOTE=true` compra el quote token con SOL si falta, a costa de una transacción extra.
 
 ## Puesta en marcha
 
 ```bash
 npm install
 cp .env.example .env     # edita los valores
+npm test                 # tests de decodificación, curva y transacciones
 npm start
 ```
 
-Por defecto arranca en **`DRY_RUN=true`**: usa quotes reales de Jupiter pero no envía transacciones, así puedes medir resultados sin gastar SOL.
+Arranca en **`DRY_RUN=true`**: calcula compras y ventas con la curva real y con quotes de Jupiter, pero **no envía transacciones**. Así se mide el rendimiento sin gastar nada.
 
 ### Para operar en real
 
-1. Crea una **wallet dedicada** solo para el bot y fóndeala con poco SOL.
-2. Pon su clave en `PRIVATE_KEY` (base58 o array JSON). Nunca subas `.env` al repo (ya está en `.gitignore`).
-3. Usa un **RPC privado** (Helius, Triton, QuickNode…) en `RPC_URL` / `WS_URL`. Con el RPC público la detección llega tarde y te limitan peticiones.
-4. Cambia `DRY_RUN=false`.
+1. **Wallet dedicada.** Crea una solo para el bot, con poco saldo, y pon su clave en `PRIVATE_KEY` dentro de `.env`. El `.env` está en `.gitignore`.
+2. **RPC privado.** Ponlo en `RPC_URL` / `WS_URL`: Helius, Triton, QuickNode u otro.
+3. **Quote tokens.** Fondea la wallet con SOL y con los quote tokens que vayas a usar (SPYx, etc.).
+4. **Prueba con muy poco.** Cambia `DRY_RUN=false` y empieza con importes mínimos. **Primero valida una compra y una venta reales pequeñas.**
+
+## Infraestructura y velocidad
+
+| Pieza | Variable | Qué gana |
+|---|---|---|
+| RPC privado | `RPC_URL`, `WS_URL` | Menos límites de peticiones y menos latencia en lecturas y envíos. |
+| gRPC (Yellowstone) | `DETECTION=grpc`, `GRPC_URL`, `GRPC_TOKEN` | La tx llega completa al ejecutarse, sin `getParsedTransaction`: ahorra uno o varios viajes al RPC. |
+| Shreds | `DETECTION=shreds` | Ve la tx **antes** de que se ejecute. El pool se reconstruye desde la instrucción porque aún no existe on-chain. |
+| Jito | `JITO_ENABLED=true` | Nuestras txs de LaunchLab llegan directas al líder con propina. |
+| VPS | — | Ponlo cerca del proveedor de gRPC/RPC (misma región). |
+
+**Riesgo del modo shreds:** detectamos la creación antes de que se ejecute. Si nuestra compra llega al líder antes que la creación, falla y solo se pierde la comisión. Si la creación falla, también. El siguiente paso para afinarlo sería enviar ambas en un *bundle* de Jito.
 
 ## Configuración
 
-Todas las opciones están documentadas en [`.env.example`](.env.example). Las más importantes:
+Todas las opciones están documentadas en [`.env.example`](.env.example).
 
-- `BUY_AMOUNT_SOL` — SOL por compra.
-- `SLIPPAGE_BPS` — slippage en puntos básicos (1500 = 15 %). Los tokens recién lanzados se mueven mucho.
-- `PRIORITY_FEE_MAX_LAMPORTS` — tope de priority fee por transacción.
-- `TAKE_PROFIT_PCT`, `STOP_LOSS_PCT`, `MAX_HOLD_SECONDS` — reglas de salida.
-- `SOURCES` — `pumpfun`, `raydium` o ambos.
+## Estructura
+
+```
+src/
+  index.ts              orquestación: detección → filtros → compra → posiciones
+  config.ts             variables de entorno
+  decoders.ts           detección unificada (pump.fun, Raydium, LaunchLab/StonkFun)
+  stream/websocket.ts   detección por logsSubscribe
+  stream/grpc.ts        detección por Yellowstone gRPC y shreds
+  launchlab/
+    borsh.ts            lector Borsh
+    layout.ts           discriminadores y decodificación de cuentas/instrucciones
+    curve.ts            matemática de la curva y comisiones (portada del SDK de Raydium)
+    instructions.ts     buy_exact_in / sell_exact_in y PDAs
+    client.ts           lectura de pools/configs con caché
+  trader.ts             compra/venta (LaunchLab directo o Jupiter)
+  positions.ts          TP/SL/tiempo, PnL y persistencia
+  filters.ts            authorities del mint y transfer fee
+  tx.ts                 compute budget, blockhash cacheado, Jito
+  jupiter.ts            cliente de la API de Jupiter
+test/                   tests (node:test)
+```
 
 ## Riesgos
 
-- La gran mayoría de tokens nuevos son rug pulls o pierden casi todo su valor en minutos. Los filtros reducen el riesgo, no lo eliminan.
-- Las posiciones solo se guardan en memoria: si paras el bot, las posiciones abiertas se listan en consola pero **no se venden solas**.
+- La gran mayoría de tokens nuevos pierden casi todo su valor en minutos. Los filtros reducen el riesgo, no lo eliminan.
+- El bot **no se ha probado todavía contra mainnet**. Valida primero en `DRY_RUN` y luego con importes mínimos.
 - Opera solo con dinero que puedas perder.
-
-## Próximos pasos posibles
-
-- Envío por **Jito bundles** o swaps directos contra la bonding curve de pump.fun (sin pasar por Jupiter) para bajar latencia.
-- Más filtros: concentración de holders, liquidez mínima, metadatos/redes sociales, creador en lista negra.
-- Persistencia de posiciones (archivo/SQLite) y notificaciones por Telegram.
-- Trailing stop y ventas parciales.

@@ -25,6 +25,8 @@ export interface LaunchLabLaunch {
   /** Solo para curvas de producto constante (las más comunes). */
   curve?: { supply: bigint; totalBaseSell: bigint; totalQuoteFundRaising: bigint };
   totalLockedAmount: bigint;
+  /** Transfer fee Token-2022 fijada al crear el mint (config "reward" de StonkFun). */
+  transferFee?: { bps: number; max: bigint };
   /** Compras hechas en la misma transacción de creación (dev buy), en unidades de quote. */
   sameTxBuysQuote: bigint[];
 }

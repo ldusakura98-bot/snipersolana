@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { LAUNCHLAB_PROGRAM, PUMPFUN_PROGRAM, STONKFUN_PLATFORM_CONFIGS_DEFAULT, WSOL_MINT } from '../src/config.js';
 import { detectLaunch } from '../src/decoders.js';
+import { compiledToRawIxs } from '../src/stream/grpc.js';
 import { u64le } from '../src/launchlab/borsh.js';
 import { LaunchLabClient, spotPrice } from '../src/launchlab/client.js';
 import { IX } from '../src/launchlab/layout.js';
@@ -105,3 +106,20 @@ describe('LaunchLabClient.snapshot', () => {
   });
 });
 
+
+describe('compiledToRawIxs (gRPC / shreds)', () => {
+  it('resuelve índices incluyendo cuentas de lookup tables (writable y luego readonly)', () => {
+    const k = () => Keypair.generate().publicKey;
+    const [a, b, prog, altW, altR] = [k(), k(), k(), k(), k()];
+    const ixs = compiledToRawIxs(
+      [a.toBytes(), b.toBytes(), prog.toBytes()],
+      [altW.toBytes()],
+      [altR.toBytes()],
+      [{ programIdIndex: 2, accounts: Uint8Array.from([0, 3, 4, 1]), data: Uint8Array.from([7]) }],
+    );
+    assert.equal(ixs.length, 1);
+    assert.equal(ixs[0].programId, prog.toBase58());
+    assert.deepEqual(ixs[0].accounts, [a, altW, altR, b].map((x) => x.toBase58()));
+    assert.deepEqual([...ixs[0].data], [7]);
+  });
+});

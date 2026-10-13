@@ -8,6 +8,7 @@ import { LAUNCHLAB_AUTHORITY } from './launchlab/instructions.js';
 import { CurveType, PoolStatus } from './launchlab/layout.js';
 import { log } from './logger.js';
 import { formatAmount, PositionManager } from './positions.js';
+import { RiskManager } from './risk.js';
 import { startGrpcStream } from './stream/grpc.js';
 import { startWebsocketStream } from './stream/websocket.js';
 import { LAMPORTS_PER_SOL, Trader } from './trader.js';
@@ -18,7 +19,15 @@ const connection = new Connection(config.rpcUrl, { wsEndpoint: config.wsUrl, com
 const blockhashes = new BlockhashCache(connection);
 const launchlab = new LaunchLabClient(connection);
 const trader = new Trader(connection, launchlab, blockhashes);
-const positions = new PositionManager(trader);
+const risk = new RiskManager(
+  {
+    maxDailyLossSol: config.maxDailyLossSol,
+    maxConsecutiveLosses: config.maxConsecutiveLosses,
+    cooldownMinutes: config.cooldownMinutes,
+  },
+  config.riskFile,
+);
+const positions = new PositionManager(connection, trader, risk);
 let pendingBuys = 0;
 
 const short = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
@@ -111,6 +120,11 @@ async function snipeJupiter(t: NewToken) {
 
 async function onNewToken(t: NewToken) {
   if (positions.positions.has(t.mint)) return;
+  const allowed = risk.canOpen();
+  if (!allowed.ok) {
+    log.info(`Nuevo token [${t.source}] ${t.mint} ignorado: ${allowed.reason}`);
+    return;
+  }
   if (positions.positions.size + pendingBuys >= config.maxOpenPositions) {
     log.info(`Nuevo token [${t.source}] ${t.mint} ignorado: máximo de posiciones abiertas (${config.maxOpenPositions})`);
     return;
@@ -130,8 +144,23 @@ async function main() {
   log.info(`Wallet: ${trader.owner.toBase58()} | fuentes: ${config.sources.join(', ')}`);
   log.info(
     `Compra ${config.buyAmountSol} SOL (o equivalente) | slippage ${config.slippageBps / 100}% | ` +
-      `TP ${config.takeProfitPct}% | SL ${config.stopLossPct}% | máx ${config.maxOpenPositions} posiciones`,
+      `máx ${config.maxOpenPositions} posiciones`,
   );
+
+  log.info(
+    `Salidas: SL ${config.stopLossPct}% | trailing ${config.trailingStopPct}% desde máx (tras +${config.trailingActivationPct}%) | ` +
+      `parcial ${config.partialTpSellPct}% a +${config.partialTpPct}% | TP ${config.takeProfitPct}% | ` +
+      `pérdida diaria máx ${config.maxDailyLossSol} SOL | pausa tras ${config.maxConsecutiveLosses} pérdidas`,
+  );
+  // Costes fijos de ida y vuelta (priority fee + propina, compra y venta) frente al importe por operación.
+  const fixedCostSol = (2 * (config.priorityFeeMaxLamports + (config.jitoEnabled ? config.jitoTipLamports : 0))) / 1e9;
+  const fixedCostPct = (fixedCostSol / config.buyAmountSol) * 100;
+  if (fixedCostPct > 5) {
+    log.warn(
+      `Costes fijos de hasta ${fixedCostSol} SOL por operación = ${fixedCostPct.toFixed(1)}% de BUY_AMOUNT_SOL. ` +
+        'Sube BUY_AMOUNT_SOL o baja PRIORITY_FEE_MAX_LAMPORTS/JITO_TIP_LAMPORTS.',
+    );
+  }
 
   if (!config.dryRun) {
     const balance = await connection.getBalance(trader.owner);
@@ -151,7 +180,7 @@ async function main() {
 
   const shutdown = async () => {
     log.info('Deteniendo...');
-    positions.stop();
+    await positions.stop();
     blockhashes.stop();
     await stopStream();
     if (positions.positions.size > 0) {

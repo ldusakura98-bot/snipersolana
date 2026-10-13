@@ -93,13 +93,13 @@ export const config = {
   sources: list('SOURCES', ['stonkfun']).map((s) => oneOf('SOURCES', s.toLowerCase(), SOURCES)),
   stonkfunPlatformConfigs: list('STONKFUN_PLATFORM_CONFIGS', STONKFUN_PLATFORM_CONFIGS_DEFAULT),
 
-  buyAmountSol: num('BUY_AMOUNT_SOL', 0.01),
+  buyAmountSol: num('BUY_AMOUNT_SOL', 0.05),
   /** Importe fijo por quote token para LaunchLab/StonkFun. Si no hay entrada, se convierte BUY_AMOUNT_SOL vía Jupiter. */
   quoteBuyAmounts: quoteAmounts('QUOTE_BUY_AMOUNTS'),
   /** Si falta saldo del quote token (p. ej. SPYx), compra lo necesario con SOL vía Jupiter antes de snipear. */
   autoSwapQuote: bool('AUTO_SWAP_QUOTE', false),
   slippageBps: num('SLIPPAGE_BPS', 1500),
-  priorityFeeMaxLamports: num('PRIORITY_FEE_MAX_LAMPORTS', 500_000),
+  priorityFeeMaxLamports: num('PRIORITY_FEE_MAX_LAMPORTS', 200_000),
   computeUnitLimit: num('COMPUTE_UNIT_LIMIT', 250_000),
   maxOpenPositions: num('MAX_OPEN_POSITIONS', 3),
 
@@ -111,15 +111,23 @@ export const config = {
   /** No compra si la curva ya está más llena que esto (dev buy grande / llegamos tarde). */
   maxCurveProgressPct: num('MAX_CURVE_PROGRESS_PCT', 20),
 
-  takeProfitPct: num('TAKE_PROFIT_PCT', 100),
+  takeProfitPct: num('TAKE_PROFIT_PCT', 300),
   stopLossPct: num('STOP_LOSS_PCT', 30),
+  trailingStopPct: num('TRAILING_STOP_PCT', 25),
+  trailingActivationPct: num('TRAILING_ACTIVATION_PCT', 50),
+  partialTpPct: num('PARTIAL_TP_PCT', 100),
+  partialTpSellPct: num('PARTIAL_TP_SELL_PCT', 50),
+  maxDailyLossSol: num('MAX_DAILY_LOSS_SOL', 0.25),
+  maxConsecutiveLosses: num('MAX_CONSECUTIVE_LOSSES', 5),
+  cooldownMinutes: num('COOLDOWN_MINUTES', 60),
+  riskFile: str('RISK_FILE', 'risk.json'),
   maxHoldSeconds: num('MAX_HOLD_SECONDS', 600),
-  priceCheckIntervalMs: num('PRICE_CHECK_INTERVAL_MS', 3000),
+  priceCheckIntervalMs: num('PRICE_CHECK_INTERVAL_MS', 2000),
   positionsFile: str('POSITIONS_FILE', 'positions.json'),
 
   jitoEnabled: bool('JITO_ENABLED', false),
   jitoUrl: str('JITO_URL', 'https://mainnet.block-engine.jito.wtf').replace(/\/$/, ''),
-  jitoTipLamports: num('JITO_TIP_LAMPORTS', 100_000),
+  jitoTipLamports: num('JITO_TIP_LAMPORTS', 50_000),
 
   jupiterApiUrl: str('JUPITER_API_URL', 'https://lite-api.jup.ag/swap/v1').replace(/\/$/, ''),
   jupiterApiKey: opt('JUPITER_API_KEY'),

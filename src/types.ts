@@ -55,5 +55,10 @@ export interface Position {
   openedAt: number;
   transferFee?: { bps: number; max: bigint };
   launchlab?: LaunchLabLaunch;
-  selling?: boolean;
+  /** Valor máximo alcanzado (en quote), para el trailing stop. */
+  peakValue?: bigint;
+  /** Ya se hizo la venta parcial de take-profit. */
+  partialDone?: boolean;
+  /** Hay una evaluación/venta en curso (no se persiste). */
+  busy?: boolean;
 }

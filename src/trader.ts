@@ -9,9 +9,9 @@ import { Connection, PublicKey, SystemProgram, TransactionInstruction, Versioned
 import { config, WSOL_MINT } from './config.js';
 import { buildSwapTx, getQuote } from './jupiter.js';
 import { LaunchLabClient, PoolSnapshot } from './launchlab/client.js';
-import { quoteBuy, quoteSell, TransferFee } from './launchlab/curve.js';
+import { feeRates, quoteBuy, quoteSell, TransferFee } from './launchlab/curve.js';
 import { buyExactInIx, LaunchLabSwapAccounts, sellExactInIx } from './launchlab/instructions.js';
-import { PoolStatus } from './launchlab/layout.js';
+import { PoolState, PoolStatus } from './launchlab/layout.js';
 import { log } from './logger.js';
 import { BlockhashCache, sendAndConfirm, sendInstructions } from './tx.js';
 import type { LaunchLabLaunch, Position } from './types.js';
@@ -127,9 +127,19 @@ export class Trader {
     return { signature, tokenAmount: (await this.tokenBalance(launch.baseMint)) || baseReceived };
   }
 
-  /** Vende toda la posición: en la curva si sigue activa, si no (token migrado) vía Jupiter. */
-  async sell(p: Position): Promise<SellResult | undefined> {
-    const amount = config.dryRun ? p.tokenAmount : (await this.tokenBalance(p.mint)) || p.tokenAmount;
+  /**
+   * Vende `fraction` (0–1) de la posición: en la curva si sigue activa, si no (token migrado) vía Jupiter.
+   * Devuelve también la cantidad de tokens vendida.
+   */
+  async sell(p: Position, fraction = 1): Promise<(SellResult & { amount: bigint }) | undefined> {
+    const held = config.dryRun ? p.tokenAmount : (await this.tokenBalance(p.mint)) || p.tokenAmount;
+    const amount = fraction >= 1 ? held : (held * BigInt(Math.round(fraction * 10_000))) / 10_000n;
+    if (amount <= 0n) return undefined;
+    const res = await this.sellAmount(p, amount);
+    return res && { ...res, amount };
+  }
+
+  private async sellAmount(p: Position, amount: bigint): Promise<SellResult | undefined> {
     const snapshot = await this.launchLabSnapshot(p);
     if (!snapshot) return this.sellJupiter(p.mint, amount, p.quoteMint);
 
@@ -144,6 +154,25 @@ export class Trader {
     ];
     const signature = await sendInstructions(this.connection, this.blockhashes, ixs);
     return { signature, quoteOut };
+  }
+
+  /** Valor de la posición a partir de un PoolState recibido por suscripción (sin pedir nada al RPC). */
+  async valueFromPool(p: Position, state: PoolState): Promise<bigint | undefined> {
+    if (p.venue !== 'launchlab' || !p.launchlab || state.status !== PoolStatus.Fund) return undefined;
+    const [global, platform] = await Promise.all([
+      this.launchlab.globalConfig(p.launchlab.globalConfig),
+      this.launchlab.platformConfig(p.launchlab.platformConfig),
+    ]);
+    return quoteSell(global.curveType, state, p.tokenAmount, feeRates(global, platform), p.transferFee);
+  }
+
+  /** Convierte una cantidad de quote token a lamports (para medir pérdidas en SOL). */
+  async toLamports(quoteMint: string, amount: bigint): Promise<bigint | undefined> {
+    if (quoteMint === WSOL_MINT || amount === 0n) return amount;
+    const abs = amount < 0n ? -amount : amount;
+    const q = await getQuote(quoteMint, WSOL_MINT, abs, 100);
+    if (!q) return undefined;
+    return amount < 0n ? -BigInt(q.outAmount) : BigInt(q.outAmount);
   }
 
   /** Valor actual de la posición en unidades del quote token. */

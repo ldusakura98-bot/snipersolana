@@ -5,3 +5,5 @@ dist/
 wallet*.json
 positions.json
 positions.json.tmp
+risk.json
+risk.json.tmp

@@ -80,12 +80,29 @@ src/
     instructions.ts     buy_exact_in / sell_exact_in y PDAs
     client.ts           lectura de pools/configs con caché
   trader.ts             compra/venta (LaunchLab directo o Jupiter)
-  positions.ts          TP/SL/tiempo, PnL y persistencia
+  positions.ts          seguimiento en tiempo real, ventas, PnL y persistencia
+  exits.ts              reglas de salida (SL, trailing, parcial, TP, tiempo)
+  risk.ts               límite de pérdida diaria y pausa por racha
   filters.ts            authorities del mint y transfer fee
   tx.ts                 compute budget, blockhash cacheado, Jito
   jupiter.ts            cliente de la API de Jupiter
 test/                   tests (node:test)
 ```
+
+## Gestión del riesgo
+
+| Protección | Variables | Qué hace |
+|---|---|---|
+| Stop-loss | `STOP_LOSS_PCT` | Vende si la posición cae un X %. |
+| Trailing stop | `TRAILING_STOP_PCT`, `TRAILING_ACTIVATION_PCT` | Cuando ya se ha ganado lo suficiente, vende si cae un X % desde el máximo. |
+| Venta parcial | `PARTIAL_TP_PCT`, `PARTIAL_TP_SELL_PCT` | Vende parte al alcanzar un objetivo (p. ej. 50 % al doblar = recuperas lo invertido). |
+| Take-profit / tiempo | `TAKE_PROFIT_PCT`, `MAX_HOLD_SECONDS` | Cierra el resto. |
+| Pérdida diaria máxima | `MAX_DAILY_LOSS_SOL` | Deja de comprar hasta el día siguiente (UTC). |
+| Racha de pérdidas | `MAX_CONSECUTIVE_LOSSES`, `COOLDOWN_MINUTES` | Pausa tras N pérdidas seguidas. |
+
+Las posiciones en la curva de StonkFun se evalúan **en cada cambio del pool** (suscripción a la cuenta), no solo cada pocos segundos. Aun así, el stop-loss **no protege de un rug pull**: si el precio cae un 90 % en una sola transacción, se vende a ese precio.
+
+Al arrancar, el bot avisa si las comisiones fijas (priority fee + propina, de ida y vuelta) superan el 5 % de `BUY_AMOUNT_SOL`.
 
 ## Riesgos
 

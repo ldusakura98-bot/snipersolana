@@ -83,6 +83,7 @@ src/
   positions.ts          seguimiento en tiempo real, ventas, PnL y persistencia
   exits.ts              reglas de salida (SL, trailing, parcial, TP, tiempo)
   risk.ts               límite de pérdida diaria y pausa por racha
+  stats.ts              trades.csv y resúmenes con los tramos de GMGN
   filters.ts            authorities del mint y transfer fee
   tx.ts                 compute budget, blockhash cacheado, Jito
   jupiter.ts            cliente de la API de Jupiter
@@ -103,6 +104,21 @@ test/                   tests (node:test)
 Las posiciones en la curva de StonkFun se evalúan **en cada cambio del pool** (suscripción a la cuenta), no solo cada pocos segundos. Aun así, el stop-loss **no protege de un rug pull**: si el precio cae un 90 % en una sola transacción, se vende a ese precio.
 
 Al arrancar, el bot avisa si las comisiones fijas (priority fee + propina, de ida y vuelta) superan el 5 % de `BUY_AMOUNT_SOL`.
+
+## Medir y comparar (estilo GMGN)
+
+Cada token cerrado se añade a `trades.csv`. Al arrancar y cada `STATS_SUMMARY_MINUTES`, el bot muestra un resumen con los mismos tramos que la pestaña "Distribución" de GMGN:
+
+```
+Resumen 7D: 412 tokens | tasa de éxito 28.4% | PnL +0.8312 SOL | tenencia media 540 min
+    >500%          5 (1.21%)
+    200%~500%      2 (0.49%)
+    0%~200%      110 (26.70%)
+    -50%~0%      290 (70.39%)
+    <-50%          5 (1.21%)
+```
+
+Así se compara directamente con una wallet de referencia en GMGN. Ejecútalo en `DRY_RUN` el mismo periodo y compara la tasa de éxito, el reparto y el PnL.
 
 ## Riesgos
 

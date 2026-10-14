@@ -19,6 +19,8 @@ export interface PoolSnapshot {
   fees: FeeRates;
   baseDecimals: number;
   quoteDecimals: number;
+  /** Supply total del token (unidades mínimas), para el market cap. */
+  supply: bigint;
   platformName: string;
   /** 'onchain' = leído de la cuenta; 'estimated' = reconstruido desde la instrucción de creación. */
   origin: 'onchain' | 'estimated';
@@ -79,6 +81,7 @@ export class LaunchLabClient {
         status: state.status,
         baseDecimals: state.baseDecimals,
         quoteDecimals: state.quoteDecimals,
+        supply: state.supply,
         origin: 'onchain',
       };
     }
@@ -100,6 +103,7 @@ export class LaunchLabClient {
       status: PoolStatus.Fund,
       baseDecimals: launch.decimals,
       quoteDecimals: await this.mintDecimals(launch.quoteMint),
+      supply: launch.curve.supply,
       origin: 'estimated',
     };
   }

@@ -9,6 +9,7 @@ import { CurveType, PoolStatus } from './launchlab/layout.js';
 import { log } from './logger.js';
 import { formatAmount, PositionManager } from './positions.js';
 import { RiskManager } from './risk.js';
+import { TradeStats } from './stats.js';
 import { startGrpcStream } from './stream/grpc.js';
 import { startWebsocketStream } from './stream/websocket.js';
 import { LAMPORTS_PER_SOL, Trader } from './trader.js';
@@ -27,7 +28,8 @@ const risk = new RiskManager(
   },
   config.riskFile,
 );
-const positions = new PositionManager(connection, trader, risk);
+const stats = new TradeStats(config.statsFile);
+const positions = new PositionManager(connection, trader, risk, stats);
 let pendingBuys = 0;
 
 const short = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
@@ -40,11 +42,14 @@ async function snipeLaunchLab(t: NewToken) {
   const s = await launchlab.snapshot(l);
   const quote = quoteLabel(l.quoteMint);
   const progress = curveProgressPct(s.pool);
+  const quoteUsd = await trader.quoteUsdPrice(l.quoteMint, s.quoteDecimals);
+  const mcapUsd = quoteUsd === undefined ? undefined : spotPrice(s) * (Number(s.supply) / 10 ** s.baseDecimals) * quoteUsd;
   const devBuy = l.sameTxBuysQuote.reduce((a, b) => a + b, 0n);
   log.info(
     `Nuevo token [${t.source}/${s.platformName || short(l.platformConfig)}] ${l.symbol} (${l.name}) ${t.mint}\n` +
       `    par: ${l.symbol}/${quote} | precio: ${spotPrice(s).toExponential(4)} ${quote} | ` +
       `curva: ${progress.toFixed(2)}% de ${formatAmount(s.pool.totalQuoteFundRaising, s.quoteDecimals)} ${quote}` +
+      `${mcapUsd !== undefined ? ` | MC: $${Math.round(mcapUsd).toLocaleString('en-US')}` : ''}` +
       `${devBuy > 0n ? ` | dev buy: ${formatAmount(devBuy, s.quoteDecimals)} ${quote}` : ''}\n` +
       `    tx: https://solscan.io/tx/${t.signature} (${Date.now() - t.detectedAt} ms)`,
   );
@@ -52,6 +57,10 @@ async function snipeLaunchLab(t: NewToken) {
   if (s.status !== PoolStatus.Fund) return skip(`la curva ya no está activa (${PoolStatus[s.status]})`);
   if (s.curveType === CurveType.Linear) return skip('curva lineal (no soportada)');
   if (progress > config.maxCurveProgressPct) return skip(`curva al ${progress.toFixed(1)}% (máx ${config.maxCurveProgressPct}%)`);
+  if (config.maxEntryMcapUsd > 0) {
+    if (mcapUsd === undefined) return skip(`no se pudo calcular el market cap (sin precio USD de ${quote})`);
+    if (mcapUsd > config.maxEntryMcapUsd) return skip(`market cap $${Math.round(mcapUsd)} > máximo $${config.maxEntryMcapUsd}`);
+  }
 
   // El mint lo crea el propio programa LaunchLab (el creador no conserva authorities) y la transfer fee
   // viene en la instrucción. Con shreds el mint aún no existe, así que no se puede (ni hace falta) leer.
@@ -87,6 +96,7 @@ async function snipeLaunchLab(t: NewToken) {
     openedAt: Date.now(),
     transferFee: mintCheck.transferFee,
     launchlab: l,
+    entryMcapUsd: mcapUsd,
   });
 }
 
@@ -171,6 +181,13 @@ async function main() {
   await blockhashes.start();
   positions.load();
   positions.start();
+  stats.logSummary(30);
+  if (config.statsSummaryMinutes > 0) {
+    setInterval(() => {
+      stats.logSummary(1);
+      stats.logSummary(7);
+    }, config.statsSummaryMinutes * 60_000);
+  }
   const onToken = (t: NewToken) => void onNewToken(t);
   log.info(`Detección: ${config.detection}${config.jitoEnabled ? ' | envío: RPC + Jito' : ''}`);
   const stopStream =

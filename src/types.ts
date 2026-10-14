@@ -55,6 +55,11 @@ export interface Position {
   openedAt: number;
   transferFee?: { bps: number; max: bigint };
   launchlab?: LaunchLabLaunch;
+  /** Coste inicial y lo cobrado en ventas (parciales incluidas), para el PnL final del token. */
+  initialCostQuote?: bigint;
+  proceedsQuote?: bigint;
+  /** Market cap en USD al comprar (para comparar con "Avg Buy MC" de GMGN). */
+  entryMcapUsd?: number;
   /** Valor máximo alcanzado (en quote), para el trailing stop. */
   peakValue?: bigint;
   /** Ya se hizo la venta parcial de take-profit. */

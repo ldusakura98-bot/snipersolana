@@ -17,6 +17,7 @@ import { BlockhashCache, sendAndConfirm, sendInstructions } from './tx.js';
 import type { LaunchLabLaunch, Position } from './types.js';
 
 export const LAMPORTS_PER_SOL = 1_000_000_000n;
+const USDC_MINT = 'EPjFWdd5AufqSSt1wzW6UuKKGxkUZvTUGHvjzTz9Dbmv';
 const BPS = 10_000n;
 const dryRunSig = () => `dry-run-${Date.now()}`;
 const withSlippage = (amount: bigint) => (amount * (BPS - BigInt(config.slippageBps))) / BPS;
@@ -33,6 +34,7 @@ export interface SellResult {
 
 export class Trader {
   private solToQuote = new Map<string, { amount: bigint; at: number }>();
+  private usdPrices = new Map<string, { price: number; at: number }>();
 
   constructor(
     private readonly connection: Connection,
@@ -91,6 +93,18 @@ export class Trader {
     const amount = BigInt(q.outAmount);
     this.solToQuote.set(quoteMint, { amount, at: Date.now() });
     return amount;
+  }
+
+  /** Precio en USD de 1 unidad del quote token (vía Jupiter → USDC), cacheado 60 s. */
+  async quoteUsdPrice(quoteMint: string, quoteDecimals: number): Promise<number | undefined> {
+    if (quoteMint === USDC_MINT) return 1;
+    const cached = this.usdPrices.get(quoteMint);
+    if (cached && Date.now() - cached.at < 60_000) return cached.price;
+    const q = await getQuote(quoteMint, USDC_MINT, 10n ** BigInt(quoteDecimals), 100).catch(() => undefined);
+    if (!q) return undefined;
+    const price = Number(q.outAmount) / 1e6;
+    this.usdPrices.set(quoteMint, { price, at: Date.now() });
+    return price;
   }
 
   /** Comprueba que haya saldo del quote token; si falta y AUTO_SWAP_QUOTE=true, lo compra con SOL. */

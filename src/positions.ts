@@ -5,6 +5,7 @@ import { decideExit, ExitRules } from './exits.js';
 import { decodePoolState } from './launchlab/layout.js';
 import { log } from './logger.js';
 import type { RiskManager } from './risk.js';
+import type { TradeStats } from './stats.js';
 import type { Trader } from './trader.js';
 import type { Position } from './types.js';
 
@@ -39,6 +40,7 @@ export class PositionManager {
     private readonly connection: Connection,
     private readonly trader: Trader,
     private readonly risk: RiskManager,
+    private readonly stats: TradeStats,
   ) {}
 
   /** Recupera las posiciones guardadas (si el bot se reinicia no se pierden). */
@@ -68,7 +70,8 @@ export class PositionManager {
   }
 
   private track(p: Position) {
-    this.positions.set(p.mint, { ...p, busy: false });
+    // El coste inicial se fija al abrir; las ventas parciales reducen costQuote pero no este.
+    this.positions.set(p.mint, { ...p, initialCostQuote: p.initialCostQuote ?? p.costQuote, busy: false });
     const tracked = this.positions.get(p.mint)!;
     if (tracked.venue === 'launchlab' && tracked.launchlab && !this.subs.has(p.mint)) {
       const id = this.connection.onAccountChange(
@@ -126,8 +129,23 @@ export class PositionManager {
       const soldCost = decision.fraction >= 1 ? p.costQuote : (p.costQuote * res.amount) / p.tokenAmount;
       const pnl = res.quoteOut - soldCost;
       const q = quoteLabel(p.quoteMint);
+      p.proceedsQuote = (p.proceedsQuote ?? 0n) + res.quoteOut;
       if (decision.fraction >= 1) {
         this.untrack(p.mint);
+        const initial = p.initialCostQuote ?? soldCost;
+        const pnlTotal = p.proceedsQuote - initial;
+        const totalLamports = await this.trader.toLamports(p.quoteMint, pnlTotal).catch(() => undefined);
+        this.stats.record({
+          closedAt: Date.now(),
+          mint: p.mint,
+          symbol: p.symbol ?? '',
+          source: p.source,
+          quoteMint: p.quoteMint,
+          pnlPct: (Number(pnlTotal) / Number(initial)) * 100,
+          pnlSol: totalLamports === undefined ? undefined : Number(totalLamports) / 1e9,
+          holdSeconds: (Date.now() - p.openedAt) / 1000,
+          entryMcapUsd: p.entryMcapUsd,
+        });
       } else {
         p.tokenAmount -= res.amount;
         p.costQuote -= soldCost;

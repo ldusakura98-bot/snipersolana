@@ -101,7 +101,7 @@ export const config = {
   slippageBps: num('SLIPPAGE_BPS', 1500),
   priorityFeeMaxLamports: num('PRIORITY_FEE_MAX_LAMPORTS', 200_000),
   computeUnitLimit: num('COMPUTE_UNIT_LIMIT', 250_000),
-  maxOpenPositions: num('MAX_OPEN_POSITIONS', 3),
+  maxOpenPositions: num('MAX_OPEN_POSITIONS', 20),
 
   requireMintAuthorityRevoked: bool('REQUIRE_MINT_AUTHORITY_REVOKED', true),
   requireFreezeAuthorityRevoked: bool('REQUIRE_FREEZE_AUTHORITY_REVOKED', true),
@@ -110,6 +110,8 @@ export const config = {
   maxTransferFeeBps: num('MAX_TRANSFER_FEE_BPS', 300),
   /** No compra si la curva ya está más llena que esto (dev buy grande / llegamos tarde). */
   maxCurveProgressPct: num('MAX_CURVE_PROGRESS_PCT', 20),
+  /** Market cap máximo (USD) al comprar (0 = sin límite). La wallet de referencia compra el 88 % por debajo de 100K. */
+  maxEntryMcapUsd: num('MAX_ENTRY_MCAP_USD', 100_000),
 
   takeProfitPct: num('TAKE_PROFIT_PCT', 300),
   stopLossPct: num('STOP_LOSS_PCT', 30),
@@ -121,9 +123,11 @@ export const config = {
   maxConsecutiveLosses: num('MAX_CONSECUTIVE_LOSSES', 5),
   cooldownMinutes: num('COOLDOWN_MINUTES', 60),
   riskFile: str('RISK_FILE', 'risk.json'),
-  maxHoldSeconds: num('MAX_HOLD_SECONDS', 600),
+  maxHoldSeconds: num('MAX_HOLD_SECONDS', 86_400),
   priceCheckIntervalMs: num('PRICE_CHECK_INTERVAL_MS', 2000),
   positionsFile: str('POSITIONS_FILE', 'positions.json'),
+  statsFile: str('STATS_FILE', 'trades.csv'),
+  statsSummaryMinutes: num('STATS_SUMMARY_MINUTES', 60),
 
   jitoEnabled: bool('JITO_ENABLED', false),
   jitoUrl: str('JITO_URL', 'https://mainnet.block-engine.jito.wtf').replace(/\/$/, ''),

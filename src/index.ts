@@ -13,13 +13,27 @@ import { TradeStats } from './stats.js';
 import { startGrpcStream } from './stream/grpc.js';
 import { startWebsocketStream } from './stream/websocket.js';
 import { LAMPORTS_PER_SOL, Trader } from './trader.js';
-import { BlockhashCache } from './tx.js';
+import { BlockhashCache, PriorityFees, SendContext } from './tx.js';
 import type { NewToken } from './types.js';
 
 const connection = new Connection(config.rpcUrl, { wsEndpoint: config.wsUrl, commitment: 'confirmed' });
 const blockhashes = new BlockhashCache(connection);
 const launchlab = new LaunchLabClient(connection);
-const trader = new Trader(connection, launchlab, blockhashes);
+const fees = new PriorityFees(connection);
+const sendCtx: SendContext = { connection, blockhashes, fees };
+const trader = new Trader(connection, launchlab, sendCtx);
+/** Lanzamientos recientes por creador, para saltar a quien lanza en serie. */
+const creatorLaunches = new Map<string, number[]>();
+
+/** Registra el lanzamiento y devuelve cuántos ha hecho el creador en las últimas 24 h (incluido este). */
+function countCreatorLaunch(creator: string): number {
+  const since = Date.now() - 86_400_000;
+  const recent = (creatorLaunches.get(creator) ?? []).filter((t) => t >= since);
+  recent.push(Date.now());
+  creatorLaunches.set(creator, recent);
+  if (creatorLaunches.size > 50_000) creatorLaunches.clear();
+  return recent.length;
+}
 const risk = new RiskManager(
   {
     maxDailyLossSol: config.maxDailyLossSol,
@@ -37,7 +51,7 @@ const quoteLabel = (mint: string) => (mint === WSOL_MINT ? 'SOL' : short(mint));
 const skip = (reason: string) => log.info(`  ↳ descartado: ${reason}`);
 
 /** StonkFun / LaunchLab: compra directa en la curva (sin Jupiter, más rápido y sin depender de su indexado). */
-async function snipeLaunchLab(t: NewToken) {
+async function snipeLaunchLab(t: NewToken, creatorLaunchCount: number) {
   const l = t.launchlab!;
   const s = await launchlab.snapshot(l);
   const quote = quoteLabel(l.quoteMint);
@@ -54,6 +68,9 @@ async function snipeLaunchLab(t: NewToken) {
       `    tx: https://solscan.io/tx/${t.signature} (${Date.now() - t.detectedAt} ms)`,
   );
 
+  if (config.maxCreatorLaunches24h > 0 && creatorLaunchCount > config.maxCreatorLaunches24h) {
+    return skip(`el creador ${short(l.creator)} ya lanzó ${creatorLaunchCount} tokens en 24 h (máx ${config.maxCreatorLaunches24h})`);
+  }
   if (s.status !== PoolStatus.Fund) return skip(`la curva ya no está activa (${PoolStatus[s.status]})`);
   if (s.curveType === CurveType.Linear) return skip('curva lineal (no soportada)');
   if (progress > config.maxCurveProgressPct) return skip(`curva al ${progress.toFixed(1)}% (máx ${config.maxCurveProgressPct}%)`);
@@ -130,6 +147,8 @@ async function snipeJupiter(t: NewToken) {
 
 async function onNewToken(t: NewToken) {
   if (positions.positions.has(t.mint)) return;
+  // Se cuenta siempre, aunque luego se descarte por otro motivo: si no, un creador en serie se colaría.
+  const creatorLaunchCount = t.launchlab ? countCreatorLaunch(t.launchlab.creator) : 0;
   const allowed = risk.canOpen();
   if (!allowed.ok) {
     log.info(`Nuevo token [${t.source}] ${t.mint} ignorado: ${allowed.reason}`);
@@ -141,7 +160,7 @@ async function onNewToken(t: NewToken) {
   }
   pendingBuys++;
   try {
-    await (t.launchlab ? snipeLaunchLab(t) : snipeJupiter(t));
+    await (t.launchlab ? snipeLaunchLab(t, creatorLaunchCount) : snipeJupiter(t));
   } catch (e) {
     log.error(`  ↳ error con ${t.mint}: ${(e as Error).message}`);
   } finally {
@@ -163,7 +182,9 @@ async function main() {
       `pérdida diaria máx ${config.maxDailyLossSol} SOL | pausa tras ${config.maxConsecutiveLosses} pérdidas`,
   );
   // Costes fijos de ida y vuelta (priority fee + propina, compra y venta) frente al importe por operación.
-  const fixedCostSol = (2 * (config.priorityFeeMaxLamports + (config.jitoEnabled ? config.jitoTipLamports : 0))) / 1e9;
+  // El rent de la cuenta del token (~0.002 SOL) se recupera al vender si RECLAIM_RENT=true.
+  const rentSol = config.reclaimRent ? 0 : 0.0021;
+  const fixedCostSol = (2 * (config.priorityFeeMaxLamports + (config.jitoEnabled ? config.jitoTipLamports : 0))) / 1e9 + rentSol;
   const fixedCostPct = (fixedCostSol / config.buyAmountSol) * 100;
   if (fixedCostPct > 5) {
     log.warn(
@@ -179,6 +200,7 @@ async function main() {
   }
 
   await blockhashes.start();
+  await fees.start();
   positions.load();
   positions.start();
   stats.logSummary(30);
@@ -199,6 +221,7 @@ async function main() {
     log.info('Deteniendo...');
     await positions.stop();
     blockhashes.stop();
+    fees.stop();
     await stopStream();
     if (positions.positions.size > 0) {
       log.warn(`Quedan ${positions.positions.size} posiciones abiertas (guardadas en ${config.positionsFile}; se retoman al reiniciar)`);

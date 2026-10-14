@@ -1,6 +1,7 @@
 import {
   createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction,
+  createHarvestWithheldTokensToMintInstruction,
   createSyncNativeInstruction,
   getAssociatedTokenAddressSync,
   TOKEN_PROGRAM_ID,
@@ -13,14 +14,14 @@ import { feeRates, quoteBuy, quoteSell, TransferFee } from './launchlab/curve.js
 import { buyExactInIx, LaunchLabSwapAccounts, sellExactInIx } from './launchlab/instructions.js';
 import { PoolState, PoolStatus } from './launchlab/layout.js';
 import { log } from './logger.js';
-import { BlockhashCache, sendAndConfirm, sendInstructions } from './tx.js';
+import { sendAndConfirm, SendContext, sendInstructions } from './tx.js';
 import type { LaunchLabLaunch, Position } from './types.js';
 
 export const LAMPORTS_PER_SOL = 1_000_000_000n;
 const USDC_MINT = 'EPjFWdd5AufqSSt1wzW6UuKKGxkUZvTUGHvjzTz9Dbmv';
 const BPS = 10_000n;
 const dryRunSig = () => `dry-run-${Date.now()}`;
-const withSlippage = (amount: bigint) => (amount * (BPS - BigInt(config.slippageBps))) / BPS;
+const withSlippage = (amount: bigint, bps: number) => (amount * (BPS - BigInt(Math.min(bps, 9_900)))) / BPS;
 
 export interface BuyResult {
   signature: string;
@@ -32,6 +33,15 @@ export interface SellResult {
   quoteOut: bigint;
 }
 
+export interface SellOptions {
+  /** Slippage aceptado en esta venta (las ventas urgentes o reintentadas usan más). */
+  slippageBps?: number;
+  /** Estado del pool ya conocido (de la suscripción): evita leerlo del RPC. */
+  pool?: PoolState;
+  /** Releer el saldo real de tokens antes de vender (en reintentos). */
+  refreshBalance?: boolean;
+}
+
 export class Trader {
   private solToQuote = new Map<string, { amount: bigint; at: number }>();
   private usdPrices = new Map<string, { price: number; at: number }>();
@@ -39,7 +49,7 @@ export class Trader {
   constructor(
     private readonly connection: Connection,
     private readonly launchlab: LaunchLabClient,
-    private readonly blockhashes: BlockhashCache,
+    private readonly ctx: SendContext,
   ) {}
 
   get owner(): PublicKey {
@@ -60,8 +70,8 @@ export class Trader {
     return { signature, tokenAmount: (await this.tokenBalance(mint)) || BigInt(quote.outAmount) };
   }
 
-  private async sellJupiter(mint: string, amount: bigint, outputMint: string): Promise<SellResult | undefined> {
-    const quote = await getQuote(mint, outputMint, amount);
+  private async sellJupiter(mint: string, amount: bigint, outputMint: string, slippageBps: number): Promise<SellResult | undefined> {
+    const quote = await getQuote(mint, outputMint, amount, slippageBps);
     if (!quote) return undefined;
     const signature = config.dryRun ? dryRunSig() : await this.executeJupiter(quote);
     return { signature, quoteOut: BigInt(quote.outAmount) };
@@ -71,7 +81,7 @@ export class Trader {
     const swapTx = await buildSwapTx(quote, this.owner.toBase58());
     const tx = VersionedTransaction.deserialize(Buffer.from(swapTx, 'base64'));
     tx.sign([config.wallet]);
-    const { lastValidBlockHeight } = await this.blockhashes.get();
+    const { lastValidBlockHeight } = await this.ctx.blockhashes.get();
     return sendAndConfirm(this.connection, tx, lastValidBlockHeight);
   }
 
@@ -134,40 +144,68 @@ export class Trader {
     const ixs: TransactionInstruction[] = [
       createAssociatedTokenAccountIdempotentInstruction(this.owner, a.userBaseToken, this.owner, a.baseMint, a.baseTokenProgram),
       ...this.openQuoteAccount(a, quoteIn),
-      buyExactInIx(a, quoteIn, withSlippage(baseOut)),
+      buyExactInIx(a, quoteIn, withSlippage(baseOut, config.slippageBps)),
       ...this.closeQuoteAccount(a),
     ];
-    const signature = await sendInstructions(this.connection, this.blockhashes, ixs);
+    const signature = await sendInstructions(this.ctx, ixs);
     return { signature, tokenAmount: (await this.tokenBalance(launch.baseMint)) || baseReceived };
   }
 
   /**
    * Vende `fraction` (0–1) de la posición: en la curva si sigue activa, si no (token migrado) vía Jupiter.
-   * Devuelve también la cantidad de tokens vendida.
+   * Usa el saldo guardado (leído tras la compra) para no gastar una consulta al RPC en el momento crítico.
    */
-  async sell(p: Position, fraction = 1): Promise<(SellResult & { amount: bigint }) | undefined> {
-    const held = config.dryRun ? p.tokenAmount : (await this.tokenBalance(p.mint)) || p.tokenAmount;
+  async sell(p: Position, fraction = 1, opts: SellOptions = {}): Promise<(SellResult & { amount: bigint }) | undefined> {
+    const held = !config.dryRun && opts.refreshBalance ? await this.tokenBalance(p.mint) : p.tokenAmount;
     const amount = fraction >= 1 ? held : (held * BigInt(Math.round(fraction * 10_000))) / 10_000n;
     if (amount <= 0n) return undefined;
-    const res = await this.sellAmount(p, amount);
-    return res && { ...res, amount };
-  }
+    const slippageBps = opts.slippageBps ?? config.sellSlippageBps;
 
-  private async sellAmount(p: Position, amount: bigint): Promise<SellResult | undefined> {
-    const snapshot = await this.launchLabSnapshot(p);
-    if (!snapshot) return this.sellJupiter(p.mint, amount, p.quoteMint);
+    const snapshot = await this.launchLabSnapshot(p, opts.pool);
+    if (!snapshot) {
+      const res = await this.sellJupiter(p.mint, amount, p.quoteMint, slippageBps);
+      return res && { ...res, amount };
+    }
 
     const quoteOut = quoteSell(snapshot.curveType, snapshot.pool, amount, snapshot.fees, p.transferFee);
-    if (config.dryRun) return { signature: dryRunSig(), quoteOut };
+    if (config.dryRun) return { signature: dryRunSig(), quoteOut, amount };
 
     const a = this.swapAccounts(p.launchlab!);
     const ixs = [
       ...this.openQuoteAccount(a, 0n),
-      sellExactInIx(a, amount, withSlippage(quoteOut)),
+      sellExactInIx(a, amount, withSlippage(quoteOut, slippageBps)),
       ...this.closeQuoteAccount(a),
     ];
-    const signature = await sendInstructions(this.connection, this.blockhashes, ixs);
-    return { signature, quoteOut };
+    const signature = await sendInstructions(this.ctx, ixs);
+    return { signature, quoteOut, amount };
+  }
+
+  /**
+   * Tras vender todo, cierra las cuentas de token vacías para recuperar el rent (~0.002 SOL cada una).
+   * Con Token-2022 + transfer fee, antes hay que mover al mint las comisiones retenidas en la cuenta
+   * (harvest, permisionado a cualquiera); si no, el cierre falla. Va con prioridad baja: no es urgente.
+   */
+  async reclaimRent(mint: string): Promise<number> {
+    if (config.dryRun || !config.reclaimRent) return 0;
+    const { value } = await this.connection.getParsedTokenAccountsByOwner(this.owner, { mint: new PublicKey(mint) }, 'confirmed');
+    const ixs: TransactionInstruction[] = [];
+    let lamports = 0;
+    for (const { pubkey, account } of value) {
+      const info = account.data.parsed.info;
+      if (BigInt(info.tokenAmount.amount) !== 0n) continue; // quedan tokens: no se puede cerrar
+      const program = account.owner;
+      const withheld = (info.extensions as { extension: string; state: any }[] | undefined)?.find(
+        (e) => e.extension === 'transferFeeAmount',
+      )?.state?.withheldAmount;
+      if (withheld && BigInt(withheld) > 0n) {
+        ixs.push(createHarvestWithheldTokensToMintInstruction(new PublicKey(mint), [pubkey], program));
+      }
+      ixs.push(createCloseAccountInstruction(pubkey, this.owner, this.owner, [], program));
+      lamports += account.lamports;
+    }
+    if (ixs.length === 0) return 0;
+    await sendInstructions(this.ctx, ixs, 'low');
+    return lamports;
   }
 
   /** Valor de la posición a partir de un PoolState recibido por suscripción (sin pedir nada al RPC). */
@@ -207,9 +245,9 @@ export class Trader {
   }
 
   /** Snapshot del pool si la posición es de LaunchLab y la curva sigue activa; si no, undefined (→ Jupiter). */
-  private async launchLabSnapshot(p: Position): Promise<PoolSnapshot | undefined> {
+  private async launchLabSnapshot(p: Position, pool?: PoolState): Promise<PoolSnapshot | undefined> {
     if (p.venue !== 'launchlab' || !p.launchlab) return undefined;
-    const s = await this.launchlab.snapshot(p.launchlab);
+    const s = pool ? await this.launchlab.fromState(p.launchlab, pool) : await this.launchlab.snapshot(p.launchlab);
     if (s.status === PoolStatus.Fund) return s;
     log.info(`${p.symbol ?? p.mint}: la curva ha migrado; a partir de ahora se opera vía Jupiter`);
     p.venue = 'jupiter';

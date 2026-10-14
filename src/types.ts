@@ -64,6 +64,10 @@ export interface Position {
   peakValue?: bigint;
   /** Ya se hizo la venta parcial de take-profit. */
   partialDone?: boolean;
+  /** Ventas fallidas seguidas: cada reintento usa más slippage. */
+  sellFailures?: number;
+  /** Salida forzada pendiente (p. ej. el creador ha vendido). */
+  forcedExit?: string;
   /** Hay una evaluación/venta en curso (no se persiste). */
   busy?: boolean;
 }

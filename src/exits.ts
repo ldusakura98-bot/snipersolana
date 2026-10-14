@@ -18,6 +18,8 @@ export interface ExitDecision {
   reason: string;
   /** Fracción de la posición a vender (1 = todo). */
   fraction: number;
+  /** Salida urgente: se acepta más slippage porque no vender sale más caro. */
+  urgent?: boolean;
 }
 
 const pct = (value: bigint, cost: bigint) => (Number(value - cost) / Number(cost)) * 100;
@@ -31,7 +33,7 @@ export function decideExit(p: Position, value: bigint, now: number, r: ExitRules
   const pnl = pct(value, p.costQuote);
   const peakPnl = pct(p.peakValue, p.costQuote);
 
-  if (pnl <= -r.stopLossPct) return { reason: `stop-loss (${pnl.toFixed(1)}%)`, fraction: 1 };
+  if (pnl <= -r.stopLossPct) return { reason: `stop-loss (${pnl.toFixed(1)}%)`, fraction: 1, urgent: true };
 
   if (r.trailingStopPct > 0 && peakPnl >= r.trailingActivationPct) {
     const fromPeak = (Number(p.peakValue - value) / Number(p.peakValue)) * 100;

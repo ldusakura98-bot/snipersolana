@@ -99,7 +99,19 @@ export const config = {
   /** Si falta saldo del quote token (p. ej. SPYx), compra lo necesario con SOL vía Jupiter antes de snipear. */
   autoSwapQuote: bool('AUTO_SWAP_QUOTE', false),
   slippageBps: num('SLIPPAGE_BPS', 1500),
+  /** Slippage de venta normal; se duplica en cada reintento fallido hasta URGENT_SELL_SLIPPAGE_BPS. */
+  sellSlippageBps: num('SELL_SLIPPAGE_BPS', 2000),
+  /** Slippage de ventas urgentes (stop-loss, venta del creador): mejor salir caro que no salir. */
+  urgentSellSlippageBps: num('URGENT_SELL_SLIPPAGE_BPS', 5000),
+  /** Cerrar las cuentas de token tras vender todo para recuperar el rent (~0.002 SOL por token). */
+  reclaimRent: bool('RECLAIM_RENT', true),
+  /** 'dynamic' = percentil de las fees recientes de la red (entre MIN y MAX); 'fixed' = siempre MAX. */
+  priorityFeeMode: oneOf('PRIORITY_FEE_MODE', str('PRIORITY_FEE_MODE', 'dynamic').toLowerCase(), ['dynamic', 'fixed'] as const),
   priorityFeeMaxLamports: num('PRIORITY_FEE_MAX_LAMPORTS', 200_000),
+  priorityFeeMinLamports: num('PRIORITY_FEE_MIN_LAMPORTS', 20_000),
+  priorityFeePercentile: num('PRIORITY_FEE_PERCENTILE', 75),
+  /** Reenvío de la tx mientras no confirma (ms). */
+  rebroadcastIntervalMs: num('REBROADCAST_INTERVAL_MS', 400),
   computeUnitLimit: num('COMPUTE_UNIT_LIMIT', 250_000),
   maxOpenPositions: num('MAX_OPEN_POSITIONS', 20),
 
@@ -112,6 +124,10 @@ export const config = {
   maxCurveProgressPct: num('MAX_CURVE_PROGRESS_PCT', 20),
   /** Market cap máximo (USD) al comprar (0 = sin límite). La wallet de referencia compra el 88 % por debajo de 100K. */
   maxEntryMcapUsd: num('MAX_ENTRY_MCAP_USD', 100_000),
+  /** Salta creadores que ya lanzaron más de N tokens en 24 h (fábricas de rugs). 0 = sin límite. */
+  maxCreatorLaunches24h: num('MAX_CREATOR_LAUNCHES_24H', 2),
+  /** Vender de inmediato si el creador vende en la curva (dev dump). */
+  exitOnDevSell: bool('EXIT_ON_DEV_SELL', true),
 
   takeProfitPct: num('TAKE_PROFIT_PCT', 300),
   stopLossPct: num('STOP_LOSS_PCT', 30),

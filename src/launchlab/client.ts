@@ -66,25 +66,42 @@ export class LaunchLabClient {
    * (detección muy temprana), lo reconstruye desde los parámetros de la instrucción.
    */
   async snapshot(launch: LaunchLabLaunch, commitment: Commitment = 'confirmed'): Promise<PoolSnapshot> {
-    const [global, platform, state] = await Promise.all([
+    // Las configs se piden en paralelo (y quedan en caché) mientras se lee el pool.
+    const [state] = await Promise.all([
+      this.poolState(launch.poolState, commitment),
       this.globalConfig(launch.globalConfig),
       this.platformConfig(launch.platformConfig),
-      this.poolState(launch.poolState, commitment),
+    ]);
+    return state ? this.fromState(launch, state) : this.estimate(launch);
+  }
+
+  /** Snapshot a partir de un PoolState ya disponible (p. ej. recibido por suscripción): sin RPC si las configs están en caché. */
+  async fromState(launch: LaunchLabLaunch, state: PoolState): Promise<PoolSnapshot> {
+    const [global, platform] = await Promise.all([
+      this.globalConfig(launch.globalConfig),
+      this.platformConfig(launch.platformConfig),
+    ]);
+    return {
+      curveType: global.curveType,
+      fees: feeRates(global, platform),
+      platformName: platform.name,
+      pool: state,
+      status: state.status,
+      baseDecimals: state.baseDecimals,
+      quoteDecimals: state.quoteDecimals,
+      supply: state.supply,
+      origin: 'onchain',
+    };
+  }
+
+  /** Reconstruye el pool desde la instrucción de creación (la cuenta aún no existe, p. ej. modo shreds). */
+  private async estimate(launch: LaunchLabLaunch): Promise<PoolSnapshot> {
+    const [global, platform] = await Promise.all([
+      this.globalConfig(launch.globalConfig),
+      this.platformConfig(launch.platformConfig),
     ]);
     const fees = feeRates(global, platform);
     const common = { curveType: global.curveType, fees, platformName: platform.name };
-
-    if (state) {
-      return {
-        ...common,
-        pool: state,
-        status: state.status,
-        baseDecimals: state.baseDecimals,
-        quoteDecimals: state.quoteDecimals,
-        supply: state.supply,
-        origin: 'onchain',
-      };
-    }
 
     if (global.curveType !== CurveType.Constant || !launch.curve) {
       throw new Error('Pool aún no visible on-chain y la curva no es de producto constante');

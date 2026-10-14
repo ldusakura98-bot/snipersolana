@@ -39,9 +39,52 @@ export class BlockhashCache {
   }
 }
 
-/** Instrucciones de compute budget: límite de CU y precio por CU según el tope de priority fee. */
-export function computeBudgetIxs(): TransactionInstruction[] {
-  const microLamports = Math.floor((config.priorityFeeMaxLamports * 1_000_000) / config.computeUnitLimit);
+/**
+ * Priority fee dinámico: percentil de las comisiones de prioridad recientes de la red
+ * (getRecentPrioritizationFees), con suelo y techo. Se refresca en segundo plano para no
+ * añadir latencia a la compra.
+ */
+export class PriorityFees {
+  /** micro-lamports por unidad de cómputo. */
+  private microLamports = PriorityFees.fromLamports(config.priorityFeeMaxLamports);
+  private timer?: NodeJS.Timeout;
+
+  constructor(private readonly connection: Connection) {}
+
+  static fromLamports(lamports: number): number {
+    return Math.floor((lamports * 1_000_000) / config.computeUnitLimit);
+  }
+
+  async start() {
+    if (config.priorityFeeMode !== 'dynamic') return;
+    await this.refresh().catch((e) => log.warn(`Priority fee dinámico: ${(e as Error).message}`));
+    this.timer = setInterval(() => void this.refresh().catch(() => {}), 10_000);
+  }
+
+  stop() {
+    clearInterval(this.timer);
+  }
+
+  /** Precio por CU según urgencia: 'normal' = dinámico (o el tope en modo fijo), 'low' = suelo. */
+  price(urgency: Urgency): number {
+    if (urgency === 'low') return PriorityFees.fromLamports(config.priorityFeeMinLamports);
+    return this.microLamports;
+  }
+
+  private async refresh() {
+    const fees = (await this.connection.getRecentPrioritizationFees()).map((f) => f.prioritizationFee).sort((a, b) => a - b);
+    if (fees.length === 0) return;
+    const pctl = fees[Math.min(fees.length - 1, Math.floor((config.priorityFeePercentile / 100) * fees.length))];
+    const min = PriorityFees.fromLamports(config.priorityFeeMinLamports);
+    const max = PriorityFees.fromLamports(config.priorityFeeMaxLamports);
+    this.microLamports = Math.min(max, Math.max(min, pctl));
+  }
+}
+
+export type Urgency = 'normal' | 'low';
+
+/** Instrucciones de compute budget: límite de CU y precio por CU. */
+export function computeBudgetIxs(microLamports = PriorityFees.fromLamports(config.priorityFeeMaxLamports)): TransactionInstruction[] {
   return [
     ComputeBudgetProgram.setComputeUnitLimit({ units: config.computeUnitLimit }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
@@ -85,24 +128,35 @@ async function sendJito(raw: Buffer): Promise<void> {
   if (!res.ok || body.error) throw new Error(`Jito: ${body.error?.message ?? res.status}`);
 }
 
+export interface SendContext {
+  connection: Connection;
+  blockhashes: BlockhashCache;
+  fees: PriorityFees;
+}
+
 /** Firma, envía y confirma una transacción construida por nosotros. */
 export async function sendInstructions(
-  connection: Connection,
-  blockhashes: BlockhashCache,
+  ctx: SendContext,
   ixs: TransactionInstruction[],
+  urgency: Urgency = 'normal',
 ): Promise<string> {
-  const { blockhash, lastValidBlockHeight } = await blockhashes.get();
+  const { blockhash, lastValidBlockHeight } = await ctx.blockhashes.get();
+  const jito = config.jitoEnabled && urgency === 'normal';
   const message = new TransactionMessage({
     payerKey: config.wallet.publicKey,
     recentBlockhash: blockhash,
-    instructions: [...computeBudgetIxs(), ...ixs, ...(config.jitoEnabled ? [jitoTipIx()] : [])],
+    instructions: [...computeBudgetIxs(ctx.fees.price(urgency)), ...ixs, ...(jito ? [jitoTipIx()] : [])],
   }).compileToV0Message();
   const tx = new VersionedTransaction(message);
   tx.sign([config.wallet]);
-  return sendAndConfirm(connection, tx, lastValidBlockHeight, config.jitoEnabled);
+  return sendAndConfirm(ctx.connection, tx, lastValidBlockHeight, jito);
 }
 
-/** Envía una transacción ya firmada (nuestra o de Jupiter) y espera a que se confirme. */
+/**
+ * Envía una transacción ya firmada (nuestra o de Jupiter) y espera a que se confirme.
+ * Mientras no confirma, la reenvía cada REBROADCAST_INTERVAL_MS: los RPC descartan txs en
+ * momentos de congestión y reenviar la misma firma (sin coste extra) mejora mucho la tasa de entrada.
+ */
 export async function sendAndConfirm(
   connection: Connection,
   tx: VersionedTransaction,
@@ -110,14 +164,23 @@ export async function sendAndConfirm(
   viaJito = false,
 ): Promise<string> {
   const raw = Buffer.from(tx.serialize());
-  // Con Jito se envía por los dos caminos a la vez: la firma es la misma, solo entra una.
-  if (viaJito) sendJito(raw).catch((e) => log.warn((e as Error).message));
-  const signature = await connection.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 3 });
+  const send = () => {
+    // Con Jito se envía por los dos caminos a la vez: la firma es la misma, solo entra una.
+    if (viaJito) sendJito(raw).catch((e) => log.warn((e as Error).message));
+    return connection.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 });
+  };
+
+  const signature = await send();
   log.info(`Tx enviada: https://solscan.io/tx/${signature}`);
-  const res = await connection.confirmTransaction(
-    { signature, blockhash: tx.message.recentBlockhash, lastValidBlockHeight },
-    'confirmed',
-  );
-  if (res.value.err) throw new Error(`Tx ${signature} falló: ${JSON.stringify(res.value.err)}`);
-  return signature;
+  const rebroadcast = setInterval(() => void send().catch(() => {}), config.rebroadcastIntervalMs);
+  try {
+    const res = await connection.confirmTransaction(
+      { signature, blockhash: tx.message.recentBlockhash, lastValidBlockHeight },
+      'confirmed',
+    );
+    if (res.value.err) throw new Error(`Tx ${signature} falló: ${JSON.stringify(res.value.err)}`);
+    return signature;
+  } finally {
+    clearInterval(rebroadcast);
+  }
 }

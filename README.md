@@ -105,6 +105,20 @@ Las posiciones en la curva de StonkFun se evalúan **en cada cambio del pool** (
 
 Al arrancar, el bot avisa si las comisiones fijas (priority fee + propina, de ida y vuelta) superan el 5 % de `BUY_AMOUNT_SOL`.
 
+## Ejecución: cada décima de margen cuenta
+
+Con márgenes del ~3 % por operación, lo que decide si se gana o se pierde son los detalles de ejecución:
+
+| Mejora | Variables | Por qué importa |
+|---|---|---|
+| Recuperar rent | `RECLAIM_RENT` | Cada cuenta de token cuesta ~0.002 SOL. Tras vender todo se cierra (con *harvest* previo de las transfer fees retenidas de Token-2022) y se recupera. |
+| Priority fee dinámico | `PRIORITY_FEE_MODE`, `…_MIN/MAX_LAMPORTS`, `…_PERCENTILE` | Paga lo que pide la red en cada momento, no siempre el máximo. |
+| Reenvío de txs | `REBROADCAST_INTERVAL_MS` | Los RPC descartan txs en congestión; reenviar la misma firma aumenta la tasa de entrada sin coste. |
+| Slippage de venta creciente | `SELL_SLIPPAGE_BPS`, `URGENT_SELL_SLIPPAGE_BPS` | Una venta que falla por slippage se reintenta con el doble; el stop-loss empieza ya con slippage alto. |
+| Salida si el creador vende | `EXIT_ON_DEV_SELL` | Suscripción a los logs del creador: si vende en LaunchLab, se sale al instante. |
+| Creadores en serie | `MAX_CREATOR_LAUNCHES_24H` | Quien lanza muchos tokens al día suele estar haciendo rugs. |
+| Venta sin RPC | — | La venta usa el estado del pool que ya llegó por la suscripción y el saldo guardado: sin consultas en el momento crítico. |
+
 ## Medir y comparar (estilo GMGN)
 
 Cada token cerrado se añade a `trades.csv`. Al arrancar y cada `STATS_SUMMARY_MINUTES`, el bot muestra un resumen con los mismos tramos que la pestaña "Distribución" de GMGN:
